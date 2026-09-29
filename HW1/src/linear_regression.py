@@ -19,7 +19,8 @@ def scores(actual, predicted):
     return mse, r_squared
 
 
-def train_sgd(x_train, y_train, x_val, y_val, epochs, learning_rate, seed):
+def train_sgd(x_train, y_train, x_val, y_val, epochs, learning_rate, seed,
+              restore_best=True):
     """Update a linear model after each randomly ordered training sample."""
     rng = np.random.default_rng(seed)
     weights = np.zeros(x_train.shape[1] + 1, dtype=np.float64)
@@ -41,7 +42,9 @@ def train_sgd(x_train, y_train, x_val, y_val, epochs, learning_rate, seed):
             best_val_mse = val_mse
             best_epoch = epoch
             best_weights = weights.copy()
-    return best_weights, history, best_epoch
+    if restore_best:
+        return best_weights, history, best_epoch
+    return weights, history, epochs
 
 
 class LinearRegressionSGD:
@@ -52,7 +55,7 @@ class LinearRegressionSGD:
         self.learning_rate = learning_rate
         self.seed = seed
 
-    def fit(self, x_train, y_train, x_val, y_val):
+    def fit(self, x_train, y_train, x_val, y_val, restore_best=True):
         if self.epochs < 1 or self.learning_rate <= 0:
             raise ValueError("epochs and learning rate must be positive")
         self.target_mean = float(y_train.mean())
@@ -61,6 +64,7 @@ class LinearRegressionSGD:
             x_train, (y_train - self.target_mean) / self.target_scale,
             x_val, (y_val - self.target_mean) / self.target_scale,
             self.epochs, self.learning_rate, self.seed,
+            restore_best,
         )
         self.history = pd.DataFrame(
             [(epoch, train_mse * self.target_scale**2,
@@ -73,9 +77,12 @@ class LinearRegressionSGD:
     def predict(self, features):
         return (self.weights[0] + features @ self.weights[1:]) * self.target_scale + self.target_mean
 
-    def save(self, path, preprocessing):
+    def save(self, path, preprocessing, input_columns=None):
         np.savez(
             path, weights=self.weights, columns=np.array(preprocessing.columns),
+            model_input_columns=np.array(
+                input_columns if input_columns is not None else preprocessing.columns,
+            ),
             drop_columns=np.array(preprocessing.drop_columns),
             medians=preprocessing.medians.to_numpy(),
             means=preprocessing.means.to_numpy(),

@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 COLORS = ("#1F77B4", "#D55E00", "#009E73", "#CC79A7", "#856404",
-          "#56B4E9", "#7F3C8D")
+          "#56B4E9", "#7F3C8D", "#E69F00")
 
 
 def _font(size):

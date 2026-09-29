@@ -13,7 +13,7 @@ import pandas as pd
 from linear_regression import LinearRegressionSGD, scores
 from neural_network import NeuralNetworkRegressor
 from plot_losses import plot_loss_curves
-from preprocess import NumericPreprocessor, TARGET
+from preprocess import NumericPreprocessor, StateOneHotFeatures, TARGET
 from topological_features import FEATURE_NAMES, LocalPersistenceFeatures
 
 
@@ -28,6 +28,7 @@ VALIDATION_FRACTION = 0.15
 DROP_COLUMNS = ("id", "Geography", "binnedInc", "PctSomeCol18_24")
 ENABLED_MODELS = (
     "linear_regression",
+    "linear_regression_state",
     "dnn_8",
     "dnn_16_8",
     "dnn_16_8_4",
@@ -48,6 +49,9 @@ TDA_NEIGHBORS = 12
 # Add future models here, then put their names in ENABLED_MODELS.
 MODEL_REGISTRY = {
     "linear_regression": lambda: LinearRegressionSGD(
+        epochs=LINEAR_EPOCHS, learning_rate=LINEAR_LEARNING_RATE, seed=SEED,
+    ),
+    "linear_regression_state": lambda: LinearRegressionSGD(
         epochs=LINEAR_EPOCHS, learning_rate=LINEAR_LEARNING_RATE, seed=SEED,
     ),
     "dnn_8": lambda: NeuralNetworkRegressor(
@@ -72,7 +76,10 @@ MODEL_REGISTRY = {
 }
 
 # Each model uses the standard inputs unless listed here.
-MODEL_FEATURE_SETS = {"tda_dnn_16_8_4": "tda"}
+MODEL_FEATURE_SETS = {
+    "linear_regression_state": "state",
+    "tda_dnn_16_8_4": "tda",
+}
 
 
 def split_labeled_data(frame):
@@ -106,6 +113,13 @@ def run_experiments():
     preprocessing = NumericPreprocessor(DROP_COLUMNS).fit(rows["train"])
     features = {name: preprocessing.transform(part) for name, part in rows.items()}
     feature_sets = {"standard": features}
+    state_encoder = None
+    if any(MODEL_FEATURE_SETS.get(name) == "state" for name in ENABLED_MODELS):
+        state_encoder = StateOneHotFeatures().fit(rows["train"])
+        feature_sets["state"] = {
+            name: np.column_stack((features[name], state_encoder.transform(part)))
+            for name, part in rows.items()
+        }
     topology = None
     if any(MODEL_FEATURE_SETS.get(name) == "tda" for name in ENABLED_MODELS):
         topology = LocalPersistenceFeatures(TDA_NEIGHBORS)
@@ -129,6 +143,8 @@ def run_experiments():
     print(f"Numeric features: {len(preprocessing.columns)}")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    if state_encoder is not None:
+        state_encoder.save(OUTPUT_DIR / "state_transform.npz")
     if topology is not None:
         topology.save(OUTPUT_DIR / "tda_transform.npz")
     results = []
@@ -166,6 +182,11 @@ def run_experiments():
                 OUTPUT_DIR / f"{name}_weights.npz", preprocessing,
                 input_columns=[*preprocessing.columns, *FEATURE_NAMES],
             )
+        elif feature_set_name == "state":
+            model.save(
+                OUTPUT_DIR / f"{name}_weights.npz", preprocessing,
+                input_columns=[*preprocessing.columns, *state_encoder.feature_names],
+            )
         else:
             model.save(OUTPUT_DIR / f"{name}_weights.npz", preprocessing)
         print(
@@ -192,11 +213,77 @@ def run_experiments():
             kaggle_features = np.column_stack((
                 kaggle_features, topology.transform(kaggle_features),
             ))
+        elif best_feature_set == "state":
+            kaggle_features = np.column_stack((
+                kaggle_features, state_encoder.transform(kaggle_test),
+            ))
         pd.DataFrame({
             "id": kaggle_test["id"],
             TARGET: best_model.predict(kaggle_features),
+        }).to_csv(OUTPUT_DIR / "submission_split_model.csv", index=False)
+
+        # Keep the held-out evaluation intact, then refit the chosen model on
+        # every labeled row for the actual Kaggle prediction file.
+        full_preprocessing = NumericPreprocessor(DROP_COLUMNS).fit(frame)
+        full_features = full_preprocessing.transform(frame)
+        final_topology = None
+        final_state_encoder = None
+        if best_feature_set == "tda":
+            final_topology = LocalPersistenceFeatures(TDA_NEIGHBORS)
+            full_features = np.column_stack((
+                full_features, final_topology.fit_transform(full_features),
+            ))
+            final_topology.save(OUTPUT_DIR / "submission_tda_transform.npz")
+        elif best_feature_set == "state":
+            final_state_encoder = StateOneHotFeatures().fit(frame)
+            full_features = np.column_stack((
+                full_features, final_state_encoder.transform(frame),
+            ))
+            final_state_encoder.save(OUTPUT_DIR / "submission_state_transform.npz")
+        full_labels = frame[TARGET].to_numpy(dtype=np.float64)
+        final_model = MODEL_REGISTRY[best_name]()
+        final_model.epochs = best_model.best_epoch
+        final_model.fit(
+            full_features, full_labels, full_features, full_labels,
+            restore_best=False,
+        )
+        if best_feature_set == "tda":
+            final_model.save(
+                OUTPUT_DIR / "submission_model_weights.npz", full_preprocessing,
+                input_columns=[*full_preprocessing.columns, *FEATURE_NAMES],
+            )
+        elif best_feature_set == "state":
+            final_model.save(
+                OUTPUT_DIR / "submission_model_weights.npz", full_preprocessing,
+                input_columns=[
+                    *full_preprocessing.columns,
+                    *final_state_encoder.feature_names,
+                ],
+            )
+        else:
+            final_model.save(
+                OUTPUT_DIR / "submission_model_weights.npz", full_preprocessing,
+            )
+
+        final_kaggle_features = full_preprocessing.transform(kaggle_test)
+        if final_topology is not None:
+            final_kaggle_features = np.column_stack((
+                final_kaggle_features,
+                final_topology.transform(final_kaggle_features),
+            ))
+        elif final_state_encoder is not None:
+            final_kaggle_features = np.column_stack((
+                final_kaggle_features,
+                final_state_encoder.transform(kaggle_test),
+            ))
+        pd.DataFrame({
+            "id": kaggle_test["id"],
+            TARGET: final_model.predict(final_kaggle_features),
         }).to_csv(OUTPUT_DIR / "submission.csv", index=False)
-        print(f"Submission model: {best_name}")
+        print(
+            f"Submission model: {best_name}, refit on all {len(frame)} labeled rows "
+            f"for {best_model.best_epoch} epochs"
+        )
     print(f"Results saved in {OUTPUT_DIR}")
 
 

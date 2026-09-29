@@ -28,7 +28,7 @@ class NeuralNetworkRegressor:
         activations.append(output)
         return activations, pre_activations
 
-    def fit(self, x_train, y_train, x_val, y_val):
+    def fit(self, x_train, y_train, x_val, y_val, restore_best=True):
         if not self.hidden_layers or any(width < 1 for width in self.hidden_layers):
             raise ValueError("hidden_layers must contain positive layer widths")
         if self.epochs < 1 or self.learning_rate <= 0 or self.batch_size < 1:
@@ -88,8 +88,11 @@ class NeuralNetworkRegressor:
                 best_weights = [weights.copy() for weights in self.weights]
                 best_biases = [biases.copy() for biases in self.biases]
 
-        self.weights = best_weights
-        self.biases = best_biases
+        if restore_best:
+            self.weights = best_weights
+            self.biases = best_biases
+        else:
+            self.best_epoch = self.epochs
         self.history = pd.DataFrame(
             history, columns=["epoch", "train_mse", "validation_mse"],
         )

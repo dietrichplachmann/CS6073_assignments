@@ -43,6 +43,34 @@ class NumericPreprocessor:
         return values.to_numpy(dtype=np.float64)
 
 
+class StateOneHotFeatures:
+    """Keep state information from Geography without using unique county names."""
+
+    @staticmethod
+    def _states(frame):
+        if "Geography" not in frame:
+            raise ValueError("Geography is required for state features")
+        states = frame["Geography"].str.rsplit(",", n=1).str[-1].str.strip()
+        if states.isna().any() or (states == "").any():
+            raise ValueError("Geography contains missing state names")
+        return states
+
+    def fit(self, frame):
+        self.categories = sorted(self._states(frame).unique())
+        self.feature_names = [f"state_{state}" for state in self.categories]
+        return self
+
+    def transform(self, frame):
+        states = pd.Categorical(self._states(frame), categories=self.categories)
+        return pd.get_dummies(states).to_numpy(dtype=np.float64)
+
+    def fit_transform(self, frame):
+        return self.fit(frame).transform(frame)
+
+    def save(self, path):
+        np.savez(path, categories=np.array(self.categories))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Remove selected columns from a CSV file")
     parser.add_argument("input_csv")
